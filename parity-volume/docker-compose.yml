@@ -1,0 +1,26 @@
+# 奇偶校验文件卷
+#
+# 三块“盘”是三个相互独立的持久目录（生产环境应分别挂载到不同物理盘）；
+# /data/meta 单独持久化 SQLite 元数据，任何单盘故障都不会丢失元数据。
+services:
+  parity-volume:
+    build: .
+    image: parity-volume:latest
+    container_name: parity-volume
+    ports:
+      - "8000:8000"
+    environment:
+      PV_DATA_DIR: /data
+      PV_DB_PATH: /data/meta/volume.db
+      PV_CHUNK_SIZE: "524288"   # 512 KiB 条带
+    volumes:
+      - ./data/disk0:/data/disk0
+      - ./data/disk1:/data/disk1
+      - ./data/disk2:/data/disk2
+      - ./data/meta:/data/meta
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/status').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

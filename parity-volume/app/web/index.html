@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>奇偶校验文件卷</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --line: #334155;
+    --text: #e2e8f0; --muted: #94a3b8;
+    --green: #22c55e; --red: #ef4444; --amber: #f59e0b; --blue: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+  }
+  header { padding: 20px 28px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 24px 28px 60px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px; margin-bottom: 20px;
+  }
+  .panel h2 { margin: 0 0 14px; font-size: 16px; }
+  .disk {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: 8px; margin-bottom: 8px; background: #0b1220;
+  }
+  .disk .name { font-weight: 600; }
+  .disk .path { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .badge {
+    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  }
+  .badge.online { background: rgba(34,197,94,.15); color: var(--green); }
+  .badge.offline { background: rgba(239,68,68,.15); color: var(--red); }
+  .badge.rebuilding { background: rgba(245,158,11,.15); color: var(--amber); }
+  button {
+    border: 1px solid var(--line); background: #334155; color: var(--text);
+    border-radius: 7px; padding: 7px 14px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { filter: brightness(1.2); }
+  button.danger { border-color: var(--red); color: #fca5a5; }
+  button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .progress-wrap {
+    height: 8px; background: #0b1220; border-radius: 999px; overflow: hidden;
+    margin-top: 10px; border: 1px solid var(--line);
+  }
+  .progress-bar { height: 100%; background: var(--amber); width: 0; transition: width .3s; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  td a { color: #7dd3fc; text-decoration: none; }
+  .drop {
+    border: 2px dashed var(--line); border-radius: 10px; padding: 26px;
+    text-align: center; color: var(--muted); cursor: pointer; margin-bottom: 12px;
+  }
+  .drop.drag { border-color: var(--blue); color: var(--text); }
+  #toast {
+    position: fixed; right: 20px; bottom: 20px; max-width: 420px;
+    display: flex; flex-direction: column; gap: 8px; z-index: 10;
+  }
+  .toast-item {
+    padding: 10px 14px; border-radius: 8px; font-size: 13px;
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  .toast-item.ok { border-color: var(--green); }
+  .toast-item.err { border-color: var(--red); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>奇偶校验文件卷（3 盘 · 2 数据块 + 1 XOR 校验块）</h1>
+  <p>单盘故障可继续下载；换空盘后后台重建，重建期间可继续上传。条带大小 <span id="chunk-size">-</span></p>
+</header>
+<main>
+  <section class="panel">
+    <h2>磁盘与重建</h2>
+    <div id="disks"></div>
+    <div id="rebuild-box" style="display:none">
+      <div class="muted" id="rebuild-text"></div>
+      <div class="progress-wrap"><div class="progress-bar" id="rebuild-bar"></div></div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>上传文件</h2>
+      <div class="drop" id="drop">
+        点击选择，或把文件拖到这里（上传成功并确认后才会出现在列表中）
+      </div>
+      <input type="file" id="file-input" multiple style="display:none">
+      <div id="upload-status" class="muted"></div>
+    </section>
+
+    <section class="panel">
+      <h2>已确认文件</h2>
+      <table>
+        <thead><tr><th>文件名</th><th>大小</th><th>条带</th><th>操作</th></tr></thead>
+        <tbody id="files"></tbody>
+      </table>
+      <div id="files-empty" class="muted">暂无已确认文件</div>
+    </section>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const fmtSize = (n) => {
+  if (n === 0) return "0 B";
+  const u = ["B", "KiB", "MiB", "GiB"];
+  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), u.length - 1);
+  return (n / 1024 ** i).toFixed(i ? 1 : 0) + " " + u[i];
+};
+const stateLabel = {online: "在线", offline: "已下线", rebuilding: "重建中"};
+
+function toast(msg, ok = true) {
+  const el = document.createElement("div");
+  el.className = "toast-item " + (ok ? "ok" : "err");
+  el.textContent = msg;
+  $("#toast").appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(body.detail || body.error || ("HTTP " + res.status));
+  }
+  return body;
+}
+
+async function refresh() {
+  const st = await api("/api/status");
+  $("#chunk-size").textContent = fmtSize(st.chunk_size);
+  $("#disks").innerHTML = "";
+  for (const d of st.disks) {
+    const row = document.createElement("div");
+    row.className = "disk";
+    const canOffline = d.state === "online";
+    const canReplace = d.state === "offline";
+    row.innerHTML = `
+      <div>
+        <div class="name">磁盘 ${d.disk_index}
+          <span class="badge ${d.state}">${stateLabel[d.state] || d.state}</span>
+          ${d.present ? "" : '<span class="badge offline">目录缺失</span>'}
+        </div>
+        <div class="path mono">${d.path}</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="danger" ${canOffline ? "" : "disabled"}
+          data-act="offline" data-disk="${d.disk_index}">下线</button>
+        <button class="primary" ${canReplace ? "" : "disabled"}
+          data-act="replace" data-disk="${d.disk_index}">换空盘并重建</button>
+      </div>`;
+    $("#disks").appendChild(row);
+  }
+  document.querySelectorAll("#disks button").forEach((btn) => {
+    btn.onclick = async () => {
+      const act = btn.dataset.act, disk = btn.dataset.disk;
+      btn.disabled = true;
+      try {
+        if (act === "offline") {
+          await api(`/api/disks/${disk}/offline`, {method: "POST"});
+          toast(`磁盘 ${disk} 已下线`);
+        } else {
+          await api(`/api/disks/${disk}/replace`, {method: "POST"});
+          toast(`磁盘 ${disk} 已换新盘，重建已启动`);
+        }
+        await refresh();
+      } catch (e) {
+        toast(e.message, false);
+        btn.disabled = false;
+      }
+    };
+  });
+
+  const rb = st.rebuild;
+  if (rb && rb.state === "running") {
+    $("#rebuild-box").style.display = "block";
+    const pct = rb.stripes_total
+      ? Math.min(100, Math.round(100 * rb.stripes_done / rb.stripes_total)) : 0;
+    $("#rebuild-text").textContent =
+      `正在重建磁盘 ${rb.disk_index}：${rb.stripes_done}/${rb.stripes_total} 条带（${pct}%）`;
+    $("#rebuild-bar").style.width = pct + "%";
+  } else {
+    $("#rebuild-box").style.display = "none";
+  }
+
+  const {files} = await api("/api/files");
+  const tbody = $("#files");
+  tbody.innerHTML = "";
+  $("#files-empty").style.display = files.length ? "none" : "block";
+  for (const f of files) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(f.name)}<div class="muted mono">${f.id}</div></td>
+      <td>${fmtSize(f.size)}</td>
+      <td>${f.stripe_count}</td>
+      <td><a href="/api/files/${f.id}">下载</a>
+          <a href="#" data-del="${f.id}" data-name="${escapeHtml(f.name)}">删除</a></td>`;
+    tbody.appendChild(tr);
+  }
+  document.querySelectorAll("[data-del]").forEach((a) => {
+    a.onclick = async (ev) => {
+      ev.preventDefault();
+      if (!confirm(`确认删除文件 ${a.dataset.name}？`)) return;
+      try {
+        await api(`/api/files/${a.dataset.del}`, {method: "DELETE"});
+        refresh();
+      } catch (e) { toast(e.message, false); }
+    };
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+
+async function uploadFiles(fileList) {
+  for (const file of fileList) {
+    const status = $("#upload-status");
+    status.textContent = `上传中：${file.name}（${fmtSize(file.size)}）…`;
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const r = await fetch("/api/files", {method: "POST", body: fd});
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.detail || body.error || ("HTTP " + r.status));
+      status.textContent = `已确认：${file.name}`;
+      toast(`上传成功：${file.name}`);
+    } catch (e) {
+      status.textContent = `上传失败：${file.name} — ${e.message}`;
+      toast(`${file.name}：${e.message}`, false);
+    }
+  }
+  refresh();
+}
+
+const drop = $("#drop"), input = $("#file-input");
+drop.onclick = () => input.click();
+input.onchange = () => uploadFiles(input.files);
+["dragover", "dragenter"].forEach((ev) =>
+  drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+["dragleave", "drop"].forEach((ev) =>
+  drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+drop.addEventListener("drop", (e) => uploadFiles(e.dataTransfer.files));
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
